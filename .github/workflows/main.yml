@@ -3,8 +3,7 @@ name: Build Android APK
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -33,30 +32,39 @@ jobs:
             -print -quit)
 
           if [ -n "$ZIP_FILE" ]; then
-            echo "Found ZIP: $ZIP_FILE"
+            echo "ZIP found: $ZIP_FILE"
             unzip -oq "$ZIP_FILE" -d "$EXTRACT_DIR"
             SEARCH_DIR="$EXTRACT_DIR"
           else
-            echo "No ZIP found; checking repository files."
             SEARCH_DIR="$GITHUB_WORKSPACE"
           fi
 
-          PROJECT_FILE=$(find "$SEARCH_DIR" \
-            -type f \( -name settings.gradle.kts \
-            -o -name settings.gradle \) \
-            ! -path '*/.gradle/*' \
-            -print -quit)
+          SETTINGS=$(find "$SEARCH_DIR" -type f \
+            \( -name settings.gradle.kts -o -name settings.gradle \) \
+            ! -path '*/.gradle/*' -print -quit)
 
-          if [ -z "$PROJECT_FILE" ]; then
-            echo "::error::No Android Gradle project found."
-            exit 1
+          if [ -n "$SETTINGS" ]; then
+            PROJECT_DIR="$(dirname "$SETTINGS")"
+          else
+            MODULE=$(find "$SEARCH_DIR" -type f \
+              \( -path '*/app/build.gradle' \
+              -o -path '*/app/build.gradle.kts' \) \
+              -print -quit)
+
+            if [ -z "$MODULE" ]; then
+              echo "::error::Android Gradle project not found."
+              find "$SEARCH_DIR" -maxdepth 4 -type f \
+                \( -name '*.gradle' -o -name '*.gradle.kts' \)
+              exit 1
+            fi
+
+            PROJECT_DIR="$(dirname "$(dirname "$MODULE")")"
           fi
 
-          PROJECT_DIR="$(dirname "$PROJECT_FILE")"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project found: $PROJECT_DIR"
+          echo "Project: $PROJECT_DIR"
 
-      - name: Set Up Java 17
+      - name: Set Up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -67,50 +75,63 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Find Android Module
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MODULE=$(find "$PROJECT_DIR" -type f \
+            \( -path '*/app/build.gradle.kts' \
+            -o -path '*/app/build.gradle' \) \
+            ! -path '*/.gradle/*' -print -quit)
+
+          if [ -z "$MODULE" ]; then
+            echo "::error::No app/build.gradle or app/build.gradle.kts found."
+            echo "Gradle files present:"
+            find "$PROJECT_DIR" -maxdepth 5 -type f \
+              \( -name '*.gradle' -o -name '*.gradle.kts' \)
+            exit 1
+          fi
+
+          echo "MODULE_FILE=$MODULE" >> "$GITHUB_ENV"
+          echo "Android module: $MODULE"
+
       - name: Align JVM Targets
         shell: bash
         run: |
           set -euo pipefail
 
-          FILE="$PROJECT_DIR/app/build.gradle.kts"
-
-          if [ ! -f "$FILE" ]; then
-            echo "::error::app/build.gradle.kts not found"
-            exit 1
-          fi
-
-          python3 - "$FILE" <<'PY'
+          python3 - "$MODULE_FILE" <<'PY'
           import re
           import sys
           from pathlib import Path
 
-          path = Path(sys.argv[1])
-          text = path.read_text()
+          p = Path(sys.argv[1])
+          s = p.read_text()
 
-          text = re.sub(
+          s = re.sub(
               r'(\bjvmTarget\s*=\s*)["\'](?:1\.)?\d+["\']',
               r'\1"17"',
-              text
+              s
           )
 
-          text = re.sub(
-              r'(\b(?:sourceCompatibility|targetCompatibility)\s*=\s*)JavaVersion\.VERSION_\w+',
-              r'\1JavaVersion.VERSION_17',
-              text
-          )
-
-          text = re.sub(
+          s = re.sub(
               r'\bJvmTarget\.JVM_(?:1_\d+|\d+)\b',
               'JvmTarget.JVM_17',
-              text
+              s
           )
 
-          path.write_text(text)
-          print("Aligned explicit Java/Kotlin JVM targets where configured.")
+          s = re.sub(
+              r'((?:sourceCompatibility|targetCompatibility)\s*=\s*)JavaVersion\.VERSION_\w+',
+              r'\1JavaVersion.VERSION_17',
+              s
+          )
+
+          p.write_text(s)
+          print("Checked JVM target settings in", p.name)
           PY
 
       - name: Build Debug APK
-        shell: bash
         run: |
           set -euo pipefail
           gradle -p "$PROJECT_DIR" \
