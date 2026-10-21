@@ -1,0 +1,80 @@
+
+name: Build Android APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Find ZIP and Extract Project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$RUNNER_TEMP/extracted"
+
+          ZIP_FILE=$(find . -type f -iname '*.zip' \
+            ! -path './.git/*' \
+            ! -path './.github/*' \
+            -print -quit)
+
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Found ZIP: $ZIP_FILE"
+            unzip -oq "$ZIP_FILE" -d "$RUNNER_TEMP/extracted"
+            SEARCH_DIR="$RUNNER_TEMP/extracted"
+          else
+            echo "No ZIP found. Searching repository files."
+            SEARCH_DIR="$GITHUB_WORKSPACE"
+          fi
+
+          PROJECT_FILE=$(find "$SEARCH_DIR" \
+            -type f -name settings.gradle \
+            ! -path '*/.gradle/*' \
+            -print -quit)
+
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "ERROR: settings.gradle not found"
+            echo "Upload the project ZIP to your repository."
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$PROJECT_FILE")
+
+          echo "Project directory: $PROJECT_DIR"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Set Up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set Up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build Debug APK
+        run: |
+          set -e
+          gradle -p "$PROJECT_DIR" assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rauza-e-Sukoon-Android-APK
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          
